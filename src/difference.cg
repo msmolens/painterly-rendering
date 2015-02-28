@@ -1,0 +1,15 @@
+// Computes the difference between the canvas and a reference image.
+
+void
+main (half4 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+
+      uniform samplerRECT canvas,
+      uniform samplerRECT reference_image,
+      
+      out half3 color : COLOR)
+{
+	half3 c = texRECT(canvas, texCoord);
+	half3 r = texRECT(reference_image, texCoord);
+	color = distance(c, r);
+}

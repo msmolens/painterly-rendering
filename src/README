@@ -1,0 +1,14 @@
+Max Smolens
+max@cs.unc.edu
+COMP 238 Final Project: GPU-Accelerated Painterly Rendering
+15 December, 2004
+
+REQUIRED LIBRARIES:
+
+Cg
+Qt
+GLEW (for RenderTexture)
+
+COMPILING:
+
+My program compiles using 'qmake' and 'make' on Linux.

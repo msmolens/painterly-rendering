@@ -1,0 +1,528 @@
+<html>
+<head>
+<title>COMP 238: Advanced Image Generation - Final Project - Max Smolens</title>
+<meta name="ROBOTS" content="NOINDEX, NOFOLLOW">
+<style type="text/css">
+body {
+  color:black;
+  margin:1em;
+}
+div.title {
+  font-family:tahoma,arial,helvetica,sans-serif;
+  padding:0.5em;
+  font-weight:bold;
+  border:2px ridge lightblue;
+  background-color:rgb(241,241,241);
+  text-align:left;
+  margin-top:3em;
+  margin-bottom:1em;
+}
+td {
+  padding-left:0.75em;
+  padding-top:0.75em;
+  text-align:center;
+}
+.heading {
+  font-size:larger;
+  font-weight:bold;
+}
+hr {
+  width:40%;
+}
+.image {
+  padding-top:1em;
+  padding-bottom:1em;
+  padding-right:1em;
+  text-align:center;
+  font-family:tahoma,arial,helvetica,sans-serif;
+}
+.math {
+  font-family:monospace;
+  padding-bottom:1em;
+}
+</style>
+</head>
+
+<body>
+<div class=title>
+COMP 238: Advanced Image Generation
+<hr size=1 align=left>
+<span style="font-weight:normal;">
+Max Smolens (<a href="mailto:max@cs.unc.edu">max@cs.unc.edu</a>)<br>
+15 December, 2004
+</span>
+</div>
+
+<div class=title>Final Project: GPU-Accelerated Painterly Rendering</div>
+
+<!--
+<p>
+Files:
+<ul>
+<li><a href="project.tar.gz">project.tar.gz</a> - source code, Makefile for Linux (requires <a href="http://www.trolltech.com/products/qt/index.html">Qt</a>, <a href="http://www.nvidia.com/cg/">Cg</a>, <a href="http://glew.sourceforge.net/">GLEW</a>)
+</ul>
+
+<hr size=1 align=left>
+-->
+<p><br>
+<div style="text-align:center;">
+<img src="palette.png" style="border:1px solid black;">
+</div>
+
+<span class=heading>OVERVIEW</span>
+<p>
+
+I implemented Aaron Hertzmann's "Painterly Rendering with Curved Brush
+Strokes of Multiple Sizes" [1], with the image processing operations
+performed on the GPU.  The painterly rendering algorithm produces
+images that appear hand-painted.  The algorithm builds the painting up
+in layers, with each layer corresponding to a single brush size.  The
+algorithm performs blurring, edge detection, difference, and averaging
+operations on images when rendering each layer.  All these steps are
+2D convolution operations in which a kernel or multiple kernels are
+applied to each pixel in an image.  Such repetitive calculations are
+suitable for GPU implementations, because of the hardware's massive
+parallelism.
+
+<p>
+<br>
+<span class=heading>PAINTERLY RENDERING</span>
+<p>
+
+The painterly rendering algorithm transforms an input image into a
+version of the image that looks hand-painted.  The algorithm
+progressively refines the painting by first placing large brush
+strokes in large, flat areas of color in the source image, and then
+drawing an additional layer for each smaller brush size in decreasing
+order.  The algorithm uses small brush strokes only in regions of high
+detail in the source image.  Therefore, the lower layers, those with
+broad brush strokes, are still visible in the final painting.
+
+<p>
+
+For each layer, the algorithm creates a <em>reference image</em> by
+blurring the source image to a degree proportional to the brush size
+used in the layer.  Reference images represent the image to be
+approximated by each brush.  Therefore, large brushes approximate only
+the gross features in a source image and small brushes approximate the
+fine features.  In pseudocode, this algorithm is written as:
+
+<pre>
+<b>Paint</b> (source_image, brush_radii[])
+{
+	canvas := constant color image
+	<b>foreach</b> brush radius r from largest to smallest <b>do</b>
+		reference_image = gaussian_blur (source_image)
+		PaintLayer (canvas, reference_image, r)
+	<b>end</b>
+}
+</pre>
+
+The <span class="math">PaintLayer</span> routine paints a new layer on
+the canvas based on the current reference image and brush size.  The
+routine chooses starting points for brush strokes by traversing a grid
+whose size is proportional to the brush size.  The average color
+difference between the canvas and the reference image at each grid
+point is computed and compared to a threshold.  If the difference is
+greater than the threshold for a grid point, then a stroke is drawn
+for that grid point.  This thresholding allows previously drawn layers
+to remain visible, because each successive layer does not cover the
+entire canvas.  The actual starting point for each stroke is chosen as
+the pixel in the neighborhood with greatest difference between the
+canvas and the reference image.  The routine is written as:
+
+<pre>
+<b>PaintLayer</b> (canvas, reference_image, r)
+{
+	S := empty set of strokes
+	D := pointwise_difference (canvas, reference_image)
+	grid := f_g * r
+	<b>for</b> x in [0..width] <b>step</b> grid <b>do</b>
+		<b>for</b> y in [0..height] <b>step</b> grid <b>do</b>
+			area_error := average difference of points in grid*grid neighborhood around (x,y)
+			<b>if</b> (area_error > threshold) <b>then</b>
+				(x',y') := largest error point in neighborhood around (x,y)
+				s := MakeStroke (r, x', y', reference_image)
+				add s to S
+		<b>end</b>
+	<b>end</b>
+	paint strokes in S in random order
+}
+</pre>
+where <span class="math">f_g</span> is some constant grid size
+factor.  The distance between two colors is defined as <span
+class="math">sqrt((r_1-r_2)^2 + (g_1-g_2)^2 + (b_1-b_2)^2)</span>.
+<span class="math">make_stroke</span> draws a brush stroke of radius
+<span class="math">r</span> starting at <span
+class="math">(x',y')</span>.  
+
+<p>
+<br>
+<span class=heading>CURVED BRUSH STROKES</span>
+<p>
+
+The brush strokes are modeled as cubic B-splines, and have constant
+thickness and color.  Each successive B-spline control point is
+located by following the image gradient's normal for the length of the
+brush radius.  Therefore, the splines roughly match the reference
+image's isocontours.  Sobel edge detection of the reference image
+luminance determines the image gradients.  A stroke ends when it has
+either reached a maximum length or when its color deviates too much
+from the reference image.
+
+<p>
+
+When choosing the normal of the image gradient for a control point
+there are two candidates.  Hertzmann chooses the normal that minimizes
+the stroke curvature.  The algorithm can also limit or exaggerate the
+curvature by filtering the stroke directions.  Strokes are rendered
+using OpenGL with either points or a triangle strip along the
+subdivided B-spline.  The stroke drawing algorithm is written as:
+
+<pre>
+<b>MakeStroke</b> (r, x0, y0, reference_image)
+{
+	stroke_color := reference_image at (x0,y0)
+	K := stroke of radius r and color stroke_color
+	add (x0,y0) to K
+	(x,y) = (x0,y0)
+	(last_dx,last_dy) := (0,0)
+	<b>for</b> i in [1..max_stroke_length] <b>do</b>
+		<b>if</b> (i > min_stroke_length <b>and</b>
+			   |reference_image at (x,y) - canvas at (x,y)| <
+			   |reference_image at (x,y) - stroke_color|) <b>then</b>
+			<b>return</b> K
+		<span style="color:green">// detect vanishing gradient</span>
+		<b>if</b> reference_image gradient magnitude at (x,y) near 0 <b>then</b>
+			<b>return</b> K
+		<span style="color:green">// get unit vector of gradient</span>
+		(gx,gy) := reference_image gradient direction at (x,y)
+		<span style="color:green">// compute a normal direction</span>
+		(dx,dy) := (-gy,gx)
+		<span style="color:green">// reverse normal if necessary</span>
+		<b>if</b> (last_dx * dx + last_dy * dy < 0) <b>then</b>
+			(dx,dy) := (-dx,-dy)
+		<span style="color:green">// filter the stroke direction</span>
+		(dx,dy) := f_c*(dx,dy) + (1-f_c)*(last_dx,last_dy)
+		normalize (dx,dy)
+		(x,y) := (x+r*dx,y+r*dy)
+		(last_dx,last_dy) := (dx,dy)
+		add (x,y) to K
+	<b>end</b>
+	return K
+}
+</pre>
+
+where <span class="math">f_c</span> is a filter constant.
+
+<p>
+<br>
+<span class=heading>RENDERING STYLES</span>
+<p>
+
+Hertzmann's painterly rendering algorithm makes uses of style parameters:
+
+<ul>
+  <li><b>Approximation threshold</b>: how closely the painting approximates the source image.
+  <li><b>Brush sizes</b>: my implementation uses fixed sizes with a constant multiplier for all brushes.
+  <li><b>Curvature filter</b>: limits or exaggerates stroke curvature.
+  <li><b>Minimum and maximum stroke lengths</b>: short strokes create pointillistic images, long strokes create expressionistic images.
+  <li><b>Opacity</b>: lower opacity produces wash-like effect.
+  <li><b>Grid size</b>: spacing of strokes.
+  <li><b>Color jitter</b>: factors by which to jitter (hue, saturation, value) or (r,g,b).
+</ul>
+
+My implementation defines twelve styles as combinations of these
+parameters.  The style can be changed for the loaded image in the
+program by selecting new style from the menu:
+
+<ul>
+  <li>Impressionism
+  <ul>
+    <li>narrow short strokes
+    <li>narrow long strokes
+    <li>broad short strokes
+    <li>broad long strokes
+  </ul>
+  <li>Expressionism
+  <ul>
+    <li>transparent strokes
+    <li>opaque strokes
+    <li>curved strokes
+  </ul>
+  <li>Pointillism
+  <ul>
+    <li>small points
+    <li>medium points
+    <li>large points
+  </ul>
+  <li>Colorist Wash
+  <ul>
+    <li>normal strokes
+    <li>broad strokes
+  </ul>
+</ul>
+
+<p>
+<br>
+<span class=heading>GPU-ACCELERATION</span>
+<p>
+
+When drawing each layer, the painterly rendering algorithm described
+above performs four image processing operations that cleanly and
+directly map to to the GPU: blurring, edge detection, difference, and
+area averaging.  I implemented each operation in fragment programs.
+The input images are bound as textures and the results are written to
+textures.
+
+<p>
+
+I implemented the blurring operation as a separable Gaussian blur.  In
+general, a 2D convolution requires (width * height) multiplications
+per pixel, but when the convolution filter can separated the
+convolution requires only (width + height) multiplications per pixel.
+Therefore, I first convolve the image with a (n * 1) filter, then
+convolve the resulting image with a (1 * n) filter.  As an example,
+my Gaussian blur with a 5x5 filter uses the following two fragment
+programs to create a reference image from the source image:
+
+<pre>
+<span style="color:green">// Horizontal filter.</span>
+void
+main (half4 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+      
+      uniform samplerRECT image,
+      uniform half weights[5],
+      
+      out half4 color : COLOR)
+{
+	color = 0;
+	for (int x = -2; x <= 2; x++) {
+		color += texRECT(image, half2(texCoord.x+x, texCoord.y)) * weights[x+2];
+	}
+}
+
+<span style="color:green">// Vertical filter.</span>
+void
+main (half4 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+      
+      uniform samplerRECT image,
+      uniform half weights[5],
+      
+      out half4 color : COLOR)
+{
+	color = 0;
+	for (int y = -2; y <= 2; y++) {
+		color += texRECT(image, half2(texCoord.x, texCoord.y+y)) * weights[y+2];
+	}
+}
+</pre>
+
+The Gaussian filter coefficients are bound to <span
+class="math">weights</span>.  The source image is initially bound as
+<span class="math">image</span> in the horizontal pass, then the
+result of that pass is bound to <span class="math">image</span> in the
+vertical pass.  The result is a Gaussian blurred source
+image&#8212;the reference image.  I have four sets of these
+horizontal/vertical filter fragment programs; one for each of the four
+brush sizes defined by my program.
+
+<p>
+The <span class="math">PaintLayer</span> routine finds the difference
+between the canvas and the reference image with the following fragment
+program:
+
+<pre>
+void
+main (half4 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+
+      uniform samplerRECT canvas,
+      uniform samplerRECT reference_image,
+      
+      out half3 color : COLOR)
+{
+	half3 c = texRECT(canvas, texCoord);
+	half3 r = texRECT(reference_image, texCoord);
+	color = distance(c, r);
+}
+</pre>
+
+Note that the <span class="math">distance</span> function computes the
+Euclidean distance between <span class="math">c</span> and <span
+class="math">r</span>&#8212;the exact computation to find the color
+difference.
+
+<p>
+
+The <span class="math">PaintLayer</span> routine also finds the
+average color difference in the neighborhood of each grid point.  I
+achieve this by feeding the result of the above difference operation
+into a box filter convolution.  Like the Gaussian filter, the box
+filter is separable.  Therefore, I can use the same set of fragment
+programs as the Gaussian blur, but I bind uniform fractional weights
+to the <span class="math">weights</span> arrays.
+
+<p>
+
+Finally, the <span class="math">MakeStroke</span> routine of the
+painterly rendering algorithm requires the image gradient directions
+and magnitudes.  I find these by Sobel filtering the luminance of the
+reference image in  two passes, first with the filter:
+
+<pre>
+|-1 -2 -1|
+| 0  0  0|
+| 1  2  1|
+</pre>
+
+and then with the transpose of that filter:
+
+<pre>
+|-1  0  1|
+|-2  0  2|
+|-1  0  1|
+</pre>
+
+I store the results in a 16-bit floating point texture.  As an
+optimization, the texture coordinates of the neighboring fragments are
+computed in a vertex program.  My Sobel filtering fragment program is:
+
+<pre>
+void
+main (half4 position        : POSITION,
+      half2 texCoord        : TEXCOORD0,
+      half4 texCoord_ne_nw  : TEXCOORD1,
+      half4 texCoord_n_s    : TEXCOORD2,
+      half4 texCoord_e_w    : TEXCOORD3,
+      half4 texCoord_se_sw  : TEXCOORD4,
+      
+      uniform samplerRECT reference_image,
+
+      out half4 color : COLOR)
+{
+	static const half3 lum = half3 (0.3, 0.59, 0.11);
+	static const int weights[2][9] = {{-1, 0, 1, -2, 0, 2, -1, 0, 1},  // top to bottom
+					  {-1, -2, -1, 0, 0, 0, 1, 2, 1}}; // left to right
+	half2 g = half2(0,0);
+	color = 0.0;
+	half lums[9];
+	lums[0] = dot(lum, texRECT (reference_image, texCoord_se_sw.zw));
+	lums[1] = dot(lum, texRECT (reference_image, texCoord_n_s.zw));
+	lums[2] = dot(lum, texRECT (reference_image, texCoord_se_sw.xy));
+	lums[3] = dot(lum, texRECT (reference_image, texCoord_e_w.zw));
+	lums[4] = dot(lum, texRECT (reference_image, texCoord));
+	lums[5] = dot(lum, texRECT (reference_image, texCoord_e_w.xy));
+	lums[6] = dot(lum, texRECT (reference_image, texCoord_ne_nw.zw));
+	lums[7] = dot(lum, texRECT (reference_image, texCoord_n_s.xy));
+	lums[8] = dot(lum, texRECT (reference_image, texCoord_ne_nw.xy));
+
+	for (int i = 0; i < 9; i++) {
+		g += lums[i] * int2(weights[0][i], weights[1][i]);
+	}
+
+	<span style="color:green">// Magnitude.</span>
+	color.r = length(g);
+	<span style="color:green">// Direction.</span>
+	color.gb = normalize(g);
+	color.g = -color.g;
+}
+</pre>
+
+Note that the fragment program normalizes the direction and computes
+the normal direction by flipping the sign of one of the direction
+components.
+
+<p>
+
+The results of three of the four image processing operations performed
+on the GPU are read back to the CPU in order to draw the brush
+strokes; only the difference operation result is not read back.  Note
+that the canvas is rendered using OpenGL and never needs to be read
+back from the GPU.  For each layer, the brush strokes are rendered to
+the canvas using render-to-texture operations.  Therefore, the canvas
+is always available as a texture for the next layer's image processing
+operations or to be displayed.
+
+<p>
+<br>
+<span class=heading>PERFORMANCE</span>
+<p>
+I tested my program on a 3GHz Pentium 4 with a Quadro FX 500 graphics
+card.  The processing time should be roughly proportional to the
+source image size.  The GPU image processing and the CPU stroke
+calculations are both included in these approximate measurements:
+<p>
+<table border=1 cellspacing=0px cellpadding=10px rules=all style="caption-side:bottom;">
+<caption>Table 1. Quadro FX 500 (Linux)</caption>
+<tr><th>Image Size</th><th>Processing Time</th></tr>
+<tr><td>320x240</td><td>0.5 s</td></tr>
+<tr><td>640x480</td><td>2 s</td></tr>
+<tr><td>1280x850</td><td>5.5 s</td></tr>
+</table>
+<br>
+
+The CPU processing times depend on the style parameters.  For example,
+a style with a long maximum brush stroke length takes longer to
+process.  However, the GPU image processing times should be
+independent of the style.  I found that with the Quadro FX 500
+approximately 50% of the processing time is from the GPU processing.
+Therefore, the CPU stroke calculations are significant in the total
+processing time.  There is likely room for improved efficiency in my
+CPU stroke drawing implementation.  I also measured the processing
+times on a GeForce 6800 Ultra:
+<p>
+<table border=1 cellspacing=0px cellpadding=10px rules=all style="caption-side:bottom;">
+<caption>Table 2. GeForce 6800 Ultra (Windows)</caption>
+<tr><th>Image Size</th><th>Processing Time</th></tr>
+<tr><td>320x240</td><td>0.38 s</td></tr>
+<tr><td>640x480</td><td>1.17 s</td></tr>
+<tr><td>1280x850</td><td>2.5 s</td></tr>
+</table>
+<br>
+
+Although the processing times are much lower than those on the Quadro
+FX 500, it is clear that the CPU processing time is significant.  I
+measured the GPU processing time for the GeForce 6800 Ultra:
+
+<p>
+<table border=1 cellspacing=0px cellpadding=10px rules=all style="caption-side:bottom;">
+<caption>Table 3. GeForce 6800 Ultra (Windows)</caption>
+<tr><th>Image Size</th><th>GPU Processing Time</th></tr>
+<tr><td>320x240</td><td>0.22 s</td></tr>
+<tr><td>640x480</td><td>0.28 s</td></tr>
+<tr><td>1280x850</td><td>0.50 s</td></tr>
+</table>
+<br>
+With the 1280x850 image, the GPU processing time accounts for only 20%
+of the total processing time.  Unfortunately, I did not have time to
+implement CPU-based versions of these algorithms to compare with.  A
+proper implementation for the speed comparison would use an optimized
+image processing library like the Intel Performance Primitives.
+
+<p>
+<br>
+<span class=heading>RESULTS</span>
+<p>
+Examples of the painting styles are presented on separate pages:
+<p>
+<a href="results_impressionism.html">Impressionism</a><br>
+<a href="results_expressionism.html">Expressionism</a><br>
+<a href="results_pointillism.html">Pointillism</a><br>
+<a href="results_wash.html">Colorist Wash</a><br>
+
+<p>
+<br>
+<span class=heading>REFERENCES</span>
+<p>
+<ol>
+  <li>Aaron Hertzmann. "Painterly rendering with curved brush strokes of multiple sizes." Proc. SIGGRAPH 1998.
+</ol>
+
+<br><br><br><br>
+<hr size=1 style="width:100%">
+
+</body>
+</html>

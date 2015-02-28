@@ -1,0 +1,41 @@
+// Sobel filter fragment program.
+// sobel filtered luminance of reference image
+
+void
+main (half4 position        : POSITION,
+      half2 texCoord        : TEXCOORD0,
+      half4 texCoord_ne_nw  : TEXCOORD1,
+      half4 texCoord_n_s    : TEXCOORD2,
+      half4 texCoord_e_w    : TEXCOORD3,
+      half4 texCoord_se_sw  : TEXCOORD4,
+      
+      uniform samplerRECT reference_image,
+
+      out half4 color : COLOR)
+{
+	static const half3 lum = half3 (0.3, 0.59, 0.11);
+	static const int weights[2][9] = {{-1, 0, 1, -2, 0, 2, -1, 0, 1},  // top to bottom
+					  {-1, -2, -1, 0, 0, 0, 1, 2, 1}}; // left to right
+	half2 g = half2(0,0);
+	color = 0.0;
+	half lums[9];
+	lums[0] = dot(lum, texRECT (reference_image, texCoord_se_sw.zw));
+	lums[1] = dot(lum, texRECT (reference_image, texCoord_n_s.zw));
+	lums[2] = dot(lum, texRECT (reference_image, texCoord_se_sw.xy));
+	lums[3] = dot(lum, texRECT (reference_image, texCoord_e_w.zw));
+	lums[4] = dot(lum, texRECT (reference_image, texCoord));
+	lums[5] = dot(lum, texRECT (reference_image, texCoord_e_w.xy));
+	lums[6] = dot(lum, texRECT (reference_image, texCoord_ne_nw.zw));
+	lums[7] = dot(lum, texRECT (reference_image, texCoord_n_s.xy));
+	lums[8] = dot(lum, texRECT (reference_image, texCoord_ne_nw.xy));
+
+	for (int i = 0; i < 9; i++) {
+		g += lums[i] * int2(weights[0][i], weights[1][i]);
+	}
+
+	// Magnitude.
+	color.r = length(g);
+	// Direction.
+	color.gb = normalize(g);
+	color.g = -color.g;
+}

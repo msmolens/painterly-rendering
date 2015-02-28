@@ -1,0 +1,12 @@
+// Passthrough fragment program.
+
+void
+main (half4 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+      
+      uniform samplerRECT image,
+      
+      out half4 color : COLOR)
+{
+	color = texRECT(image, texCoord);
+}

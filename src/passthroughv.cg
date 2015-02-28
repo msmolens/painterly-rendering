@@ -1,0 +1,15 @@
+// Passthrough vertex program.
+
+void
+main (half2 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+      
+//      uniform float4x4 modelViewProj,
+
+      out half4 oPosition  : POSITION,
+      out half2 oTexCoord  : TEXCOORD0)
+{
+//	oPosition = mul (modelViewProj, float4(position, 0, 1));
+	oPosition = half4(position, 0, 1);
+	oTexCoord = texCoord;
+}

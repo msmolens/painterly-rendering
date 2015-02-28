@@ -1,0 +1,16 @@
+// Vertical filter.
+
+void
+main (half4 position : POSITION,
+      half2 texCoord : TEXCOORD0,
+      
+      uniform samplerRECT image,
+      uniform half weights[15],
+      
+      out half4 color : COLOR)
+{
+	color = 0;
+	for (int y = -7; y <= 7; y++) {
+		color += texRECT(image, half2(texCoord.x, texCoord.y+y)) * weights[y+7];
+	}
+}
